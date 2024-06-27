@@ -39,14 +39,15 @@ const zip_local_file_header = struct {
             .filename = "test",
             .extra_field = "test"
         };
+        if (temp.signature != 0x04034b50) return error.not_a_zip_file_header;
+
         const filename_end = 30+temp.file_name_length;
         const extra_begin = filename_end;
         const extra_end = extra_begin + temp.extra_field_length;
         temp.filename = file_content[30..filename_end];
         temp.extra_field = file_content[extra_begin..extra_end];
-        if (temp.signature == 0x04034b50) {
-            return temp;
-        } else return error.not_a_zip_file_header;
+        
+        return temp;
     }
 };
 
