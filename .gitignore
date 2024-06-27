@@ -1,2 +1,3 @@
-.zig-cache
-logfile.zip
+zig-cache
+archive.zip
+result
