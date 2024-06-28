@@ -1,3 +1,4 @@
 # Reading zips
 
-Just reading header files for now
+Can now deflate a archive that uses deflate compression and none
+Can also extract a single file to writer
