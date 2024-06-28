@@ -80,7 +80,7 @@ const archive = struct {
         defer self.files.reset();
         while (self.files.next()) |data| {
             const lf = try local_file.init(data);
-            writer.print("{s}\n", .{lf.header.filename});
+            try writer.print("{s}\n", .{lf.header.filename});
         }
     }
 };
@@ -204,11 +204,13 @@ test "archive extract" {
     const buffer: []const u8 = try file.readToEndAlloc(testing.allocator, stat.size);
     defer testing.allocator.free(buffer);
 
-    fs.cwd().makeDir("result") catch |err| switch (err) {
+    const subpath = "archive_extract";
+
+    fs.cwd().makeDir(subpath) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
-    const dir = try fs.cwd().openDir("result", .{});
+    const dir = try fs.cwd().openDir(subpath, .{});
 
     var arc = archive.init(buffer);
     try arc.extract_all(dir);
@@ -221,20 +223,27 @@ test "archive single file" {
     const buffer: []const u8 = try file.readToEndAlloc(testing.allocator, stat.size);
     defer testing.allocator.free(buffer);
 
-    const subpath = "result";
+    const subpath = "archive_single_file";
 
     fs.cwd().makeDir(subpath) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
-    const path = try fs.path.join(testing.allocator, &.{ subpath, "archive_single_file.png" });
-    defer testing.allocator.free(path);
+    var file_list = std.ArrayList(u8).init(testing.allocator);
+    defer file_list.deinit();
 
-    var result_file = try fs.cwd().createFile(path, .{});
-    defer result_file.close();
 
+    var dir = try fs.cwd().openDir(subpath, .{});
     var arc = archive.init(buffer);
 
-    try arc.extract_file_to_writer("gs01_01.png", result_file.writer());
+    try arc.list_files(file_list.writer());
+    var file_iter = mem.splitAny(u8, file_list.items, "\n");
+
+    const filename = file_iter.peek();
+
+    var result_file = try dir.createFile(filename.?, .{});
+    defer result_file.close();
+
+    try arc.extract_file_to_writer(filename.?, result_file.writer());
 }
