@@ -1,0 +1,14 @@
+Usage:  unzip <flag> <file> [...]
+    flags:
+        -l <archive>        list files in archive
+        -e <archive>        extracts all files in new folder
+        -f <file name>      extracts given file name
+        -s <archive>        selects file for the -f flag
+        -i <archive>        same as -s
+        (omitted) <archive> works same way as -s when flag is omitted
+    examples:
+        unzip a.zip -f b.txt            extracts file.txt from archive.zip
+        unzip a.zip b.zip -f b.txt      same as above, will not extract all copies
+        unzip a.zip -f b.txt -f c.txt   extracts two files from the same archive
+        unzip -le a.zip                 extracts all files new directory and lists the files
+        unzip -l a.zip -l b.zip         lists both archive's files

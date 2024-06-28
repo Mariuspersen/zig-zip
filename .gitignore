@@ -1,5 +1,6 @@
 zig-cache
 .zig-cache
 archive.zip
+archive
 archive_extract
 archive_single_file

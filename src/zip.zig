@@ -5,7 +5,7 @@ const compress = std.compress;
 const mem = std.mem;
 const Allocator = mem.Allocator;
 
-const string = []const u8;
+pub const String = []const u8;
 
 fn contains(comptime T: type, haystack: []const T, needle: []const T) bool {
     if (mem.lastIndexOf(T, haystack, needle)) |_| {
@@ -18,13 +18,13 @@ const delims = &.{
     fs.path.sep_windows,
 };
 
-const archive = struct {
+pub const Archive = struct {
     const Self = @This();
     const local_file_header_signature = [_]u8{ 80, 75, 3, 4 };
 
     files: mem.SplitIterator(u8, .sequence),
 
-    fn init(file_content: string) archive {
+    pub fn init(file_content: String) Archive {
         return .{
             .files = mem.splitSequence(
                 u8,
@@ -34,12 +34,12 @@ const archive = struct {
         };
     }
 
-    fn extract_all(self: *Self, dir: fs.Dir) !void {
+    pub fn extractAll(self: *Self, dir: fs.Dir) !void {
         defer self.files.reset();
 
         while (self.files.next()) |data| {
-            var lf = try local_file.init(data);
-            const lffp = lf.file_path();
+            var lf = try LocalFile.init(data);
+            const lffp = lf.filePath();
             var lffp_it = mem.splitAny(
                 u8,
                 lffp,
@@ -55,7 +55,7 @@ const archive = struct {
                 temp_dir = try temp_dir.openDir(sub, .{});
             }
 
-            const lffn = lf.file_name();
+            const lffn = lf.fileName();
 
             const file = try temp_dir.createFile(lffn, .{});
             defer file.close();
@@ -65,10 +65,10 @@ const archive = struct {
         }
     }
 
-    fn extract_file_to_writer(self: *Self, filename: string, writer: anytype) !void {
+    pub fn extractFileToWriter(self: *Self, filename: String, writer: anytype) !void {
         defer self.files.reset();
         while (self.files.next()) |data| {
-            var lf = try local_file.init(data);
+            var lf = try LocalFile.init(data);
             if (contains(u8, lf.header.filename, filename)) {
                 try lf.deflate(writer);
                 break;
@@ -76,23 +76,23 @@ const archive = struct {
         }
     }
 
-    fn list_files(self: *Self, writer: anytype) !void {
+    pub fn listFiles(self: *Self, writer: anytype) !void {
         defer self.files.reset();
         while (self.files.next()) |data| {
-            const lf = try local_file.init(data);
+            const lf = try LocalFile.init(data);
             try writer.print("{s}\n", .{lf.header.filename});
         }
     }
 };
 
-const local_file = struct {
+const LocalFile = struct {
     const Self = @This();
 
-    header: local_file_header,
-    content: string,
+    header: LocalFileHeader,
+    content: String,
 
-    fn init(file_content: string) !local_file {
-        var header = try local_file_header.init(file_content);
+    fn init(file_content: String) !LocalFile {
+        var header = try LocalFileHeader.init(file_content);
         if (file_content.len < header.compressed_size + header.size()) return error.compressed_size_header_mismatch;
         const content = file_content[header.size() .. header.size() + header.compressed_size];
 
@@ -117,22 +117,22 @@ const local_file = struct {
         }
     }
 
-    fn file_type(self: *Self) string {
+    fn fileType(self: *Self) String {
         const idx_dot = mem.lastIndexOf(u8, self.header.filename, ".");
         const idx_delim = mem.lastIndexOfAny(u8, self.header.filename, delims);
-        
-        if (idx_dot) |dot_index|
-        if (idx_delim) |delim_index| {
-            if(delim_index > dot_index) return "";
-            if(delim_index + 1 == dot_index) return "";
 
-            return self.header.filename[dot_index..];
-        };
+        if (idx_dot) |dot_index|
+            if (idx_delim) |delim_index| {
+                if (delim_index > dot_index) return "";
+                if (delim_index + 1 == dot_index) return "";
+
+                return self.header.filename[dot_index..];
+            };
 
         return "";
     }
 
-    fn file_name(self: *Self) string {
+    fn fileName(self: *Self) String {
         const idx = mem.lastIndexOfAny(u8, self.header.filename, delims);
         if (idx) |i| {
             return self.header.filename[i + 1 ..];
@@ -141,7 +141,7 @@ const local_file = struct {
         return self.header.filename;
     }
 
-    fn file_path(self: *Self) string {
+    fn filePath(self: *Self) String {
         const idx = mem.lastIndexOfAny(u8, self.header.filename, delims);
         if (idx) |i| {
             return self.header.filename[0..i];
@@ -151,7 +151,7 @@ const local_file = struct {
     }
 };
 
-const local_file_header = struct {
+const LocalFileHeader = struct {
     const known_size: usize = 26;
     const Self = @This();
 
@@ -166,12 +166,12 @@ const local_file_header = struct {
     uncompressed_size: u32,
     file_name_length: u16,
     extra_field_length: u16,
-    filename: string = undefined,
-    extra_field: string = undefined,
+    filename: String = undefined,
+    extra_field: String = undefined,
 
-    fn init(file_content: string) !local_file_header {
+    fn init(file_content: String) !LocalFileHeader {
         if (file_content.len < 28) return error.file_content_too_short;
-        var temp = local_file_header{
+        var temp = LocalFileHeader{
             .version = mem.readInt(u16, file_content[0..2], .little),
             .genera_purpose_bit_flag = mem.readInt(u16, file_content[2..4], .little),
             .compression_method = mem.readInt(u16, file_content[4..6], .little),
@@ -193,7 +193,7 @@ const local_file_header = struct {
     }
 
     fn size(self: *Self) usize {
-        return local_file_header.known_size + self.file_name_length + self.extra_field_length;
+        return LocalFileHeader.known_size + self.file_name_length + self.extra_field_length;
     }
 };
 
@@ -212,10 +212,9 @@ test "archive extract" {
     };
     const dir = try fs.cwd().openDir(subpath, .{});
 
-    var arc = archive.init(buffer);
-    try arc.extract_all(dir);
+    var arc = Archive.init(buffer);
+    try arc.extractAll(dir);
 }
-
 test "archive single file" {
     const file = try fs.cwd().openFile("archive.zip", .{});
     defer file.close();
@@ -233,11 +232,10 @@ test "archive single file" {
     var file_list = std.ArrayList(u8).init(testing.allocator);
     defer file_list.deinit();
 
-
     var dir = try fs.cwd().openDir(subpath, .{});
-    var arc = archive.init(buffer);
+    var arc = Archive.init(buffer);
 
-    try arc.list_files(file_list.writer());
+    try arc.listFiles(file_list.writer());
     var file_iter = mem.splitAny(u8, file_list.items, "\n");
 
     const filename = file_iter.peek();
@@ -245,5 +243,5 @@ test "archive single file" {
     var result_file = try dir.createFile(filename.?, .{});
     defer result_file.close();
 
-    try arc.extract_file_to_writer(filename.?, result_file.writer());
+    try arc.extractFileToWriter(filename.?, result_file.writer());
 }
