@@ -9,31 +9,42 @@ const string = []const u8;
 
 const archive = struct {
     const Self = @This();
-    const needle = [_]u8{80,75,3,4};
+    const needle = [_]u8{ 80, 75, 3, 4 };
 
     filename: string = undefined,
     files: std.ArrayList(local_file),
 
-    fn init(file_content: string,allocator: Allocator) !archive {
+    fn init(file_content: string, allocator: Allocator) !archive {
+        //  TODO: remove allocations, replace with std.mem.split, maybe 
         var temp = .{
             .files = std.ArrayList(local_file).init(allocator),
         };
-        try index(file_content,&temp.files);
-        
+        try index(file_content, &temp.files);
         return temp;
     }
 
-    fn extract(self: *Self, subpath: string,allocator: Allocator) !void {
-        fs.cwd().makeDir(subpath) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-
+    fn extract(self: *Self, subpath: string, allocator: Allocator) !void {
+        // TODO: remove allocations
         for (self.files.items) |*lf| {
-            const path = try fs.path.join(allocator, &.{subpath,lf.header.filename});
+            const path = try fs.path.join(allocator, &.{ subpath, try lf.file_path() });
             defer allocator.free(path);
 
-            const file = try fs.cwd().createFile(path, .{});
+            _ = mem.replace(u8, path, "/", fs.path.sep_str, path);
+
+            var path_it = mem.split(u8, path, fs.path.sep_str);
+            var dir = fs.cwd();
+            while (path_it.next()) |sub| {
+                dir.makeDir(sub) catch |err| switch (err) {
+                    error.PathAlreadyExists => {},
+                    else => return err,
+                };
+                dir = try dir.openDir(sub, .{});
+            }
+
+            const lffn = try lf.file_name();
+            if (lffn.len == 0) continue;
+
+            const file = try dir.createFile(lffn, .{});
             defer file.close();
 
             const writer = file.writer();
@@ -41,21 +52,21 @@ const archive = struct {
         }
     }
 
-    fn extract_file_to_writer(self: *Self, filename: string,writer: anytype) !void {
-        for (self.files.items) |*lf| if (mem.indexOfAny(u8, filename, lf.header.filename) != null ) {
+    fn index(file_content: string, files: *std.ArrayList(local_file)) !void {
+        const idx = mem.indexOf(u8, file_content, &needle);
+        if (idx) |i| {
+            const lf = try local_file.init(file_content[i..]);
+            try files.append(lf);
+            try index(file_content[i + 1 ..], files);
+        }
+    }
+    fn extract_file_to_writer(self: *Self, filename: string, writer: anytype) !void {
+        for (self.files.items) |*lf| if (mem.indexOf(u8, lf.header.filename,filename) != null) {
             try lf.deflate(writer);
             break;
         };
     }
 
-    fn index(file_content: string,files: *std.ArrayList(local_file)) !void {
-        const idx = mem.indexOf(u8, file_content, &needle);
-        if (idx) |i| {
-            const lf = try local_file.init(file_content[i..]);
-            try files.append(lf);
-            try index(file_content[i+1..],files);
-        }
-    }
 
     fn deinit(self: *Self) void {
         self.files.deinit();
@@ -72,7 +83,7 @@ const local_file = struct {
         var header = try local_file_header.init(file_content);
 
         if (file_content.len < header.compressed_size + header.size()) return error.compressed_size_header_mismatch;
-        
+
         const content = file_content[header.size() .. header.size() + header.compressed_size];
 
         return .{
@@ -91,7 +102,11 @@ const local_file = struct {
 
         switch (self.header.compression_method) {
             0x8 => try compress.flate.decompress(reader, writer),
-            else => return error.not_implemented,
+            0x0 => try writer.writeAll(self.content),
+            else => {
+                std.debug.print("{any}\n{s}", .{self.header,self.header.filename});
+                return error.not_implemented;
+            },
         }
     }
 
@@ -102,6 +117,24 @@ const local_file = struct {
         }
 
         return error.unable_to_determine_file_type;
+    }
+
+    fn file_name(self: *Self) !string {
+        const idx = mem.lastIndexOf(u8, self.header.filename, "/");
+        if (idx) |i| {
+            return self.header.filename[i + 1 ..];
+        }
+
+        return error.unable_to_determine_file_name;
+    }
+
+    fn file_path(self: *Self) !string {
+        const idx = mem.lastIndexOf(u8, self.header.filename, "/");
+        if (idx) |i| {
+            return self.header.filename[0..i];
+        }
+
+        return error.unable_to_determine_file_path;
     }
 };
 
@@ -124,7 +157,8 @@ const local_file_header = struct {
     extra_field: string = undefined,
 
     fn init(file_content: string) !local_file_header {
-        if(file_content.len < 30) return error.file_content_too_short;
+        // TODO: replace init with init_no_signature
+        if (file_content.len < 30) return error.file_content_too_short;
         var temp = local_file_header{
             .signature = mem.readInt(u32, file_content[0..4], .little),
             .version = mem.readInt(u16, file_content[4..6], .little),
@@ -140,16 +174,16 @@ const local_file_header = struct {
         };
         if (temp.signature != 0x04034b50) return error.not_a_zip_file_header;
 
-        const filename_end = 30+temp.file_name_length;
+        const filename_end = 30 + temp.file_name_length;
         const extra_end = filename_end + temp.extra_field_length;
         temp.filename = file_content[30..filename_end];
         temp.extra_field = file_content[filename_end..extra_end];
-        
+
         return temp;
     }
 
     fn init_no_signature(file_content: string) !local_file_header {
-        if(file_content.len < 30) return error.file_content_too_short;
+        if (file_content.len < 30) return error.file_content_too_short;
         var temp = local_file_header{
             .version = mem.readInt(u16, file_content[0..2], .little),
             .genera_purpose_bit_flag = mem.readInt(u16, file_content[2..4], .little),
@@ -163,11 +197,11 @@ const local_file_header = struct {
             .extra_field_length = mem.readInt(u16, file_content[24..26], .little),
         };
 
-        const filename_end = 30+temp.file_name_length;
+        const filename_end = 28 + temp.file_name_length;
         const extra_end = filename_end + temp.extra_field_length;
-        temp.filename = file_content[30..filename_end];
+        temp.filename = file_content[28..filename_end];
         temp.extra_field = file_content[filename_end..extra_end];
-        
+
         return temp;
     }
 
@@ -176,31 +210,6 @@ const local_file_header = struct {
     }
 };
 
-test "zip_file_header_init" {
-    const file = try fs.cwd().openFile("archive.zip", .{});
-    defer file.close();
-    const stat = try file.stat();
-    const buffer: []const u8 = try file.readToEndAlloc(testing.allocator, stat.size);
-    defer testing.allocator.free(buffer);
-
-    const zip = try local_file.init(buffer);
-    std.debug.print("signature:{any}\n{any}\nfilename:{s}\nextra:{s}\n", .{buffer[0..4],zip.header,zip.header.filename,zip.header.extra_field});
-}
-
-test "deflate" {
-    const file = try fs.cwd().openFile("archive.zip", .{});
-    defer file.close();
-    const stat = try file.stat();
-    const buffer: []const u8 = try file.readToEndAlloc(testing.allocator, stat.size);
-    defer testing.allocator.free(buffer);
-
-    var zip = try local_file.init(buffer);
-    var result_file = try fs.cwd().createFile("result.png", .{});
-    defer result_file.close();
-
-    try zip.deflate(result_file.writer());
-}
-
 test "archive extract" {
     const file = try fs.cwd().openFile("archive.zip", .{});
     defer file.close();
@@ -208,9 +217,9 @@ test "archive extract" {
     const buffer: []const u8 = try file.readToEndAlloc(testing.allocator, stat.size);
     defer testing.allocator.free(buffer);
 
-    var arc = try archive.init(buffer,testing.allocator);
+    var arc = try archive.init(buffer, testing.allocator);
     defer arc.deinit();
-    try arc.extract("result",testing.allocator);
+    try arc.extract("result", testing.allocator);
 }
 
 test "archive single file" {
@@ -223,15 +232,18 @@ test "archive single file" {
     const subpath = "result";
 
     fs.cwd().makeDir(subpath) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
+        error.PathAlreadyExists => {},
+        else => return err,
     };
 
-    const path = try fs.path.join(testing.allocator, &.{subpath,"archive_single_file.png"});
+    const path = try fs.path.join(testing.allocator, &.{ subpath, "archive_single_file.txt" });
+    defer testing.allocator.free(path);
+
     var result_file = try fs.cwd().createFile(path, .{});
     defer result_file.close();
 
-    var arc = try archive.init(buffer,testing.allocator);
+    var arc = try archive.init(buffer, testing.allocator);
     defer arc.deinit();
-    try arc.extract_file_to_writer("result.png", result_file.writer());
+
+    try arc.extract_file_to_writer("logfile.txt", result_file.writer());
 }
