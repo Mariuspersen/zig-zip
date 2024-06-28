@@ -7,44 +7,57 @@ const Allocator = mem.Allocator;
 
 const string = []const u8;
 
+fn contains(comptime T: type, haystack: []const T, needle: []const T) bool {
+    if (mem.lastIndexOf(T, haystack, needle)) |_| {
+        return true;
+    } else return false;
+}
+
+const delims = &.{
+    fs.path.sep_posix,
+    fs.path.sep_windows,
+};
+
 const archive = struct {
     const Self = @This();
-    const needle = [_]u8{ 80, 75, 3, 4 };
+    const local_file_header_signature = [_]u8{ 80, 75, 3, 4 };
 
-    filename: string = undefined,
-    files: std.ArrayList(local_file),
+    files: mem.SplitIterator(u8, .sequence),
 
-    fn init(file_content: string, allocator: Allocator) !archive {
-        //  TODO: remove allocations, replace with std.mem.split, maybe 
-        var temp = .{
-            .files = std.ArrayList(local_file).init(allocator),
+    fn init(file_content: string) archive {
+        return .{
+            .files = mem.splitSequence(
+                u8,
+                file_content[4..],
+                &local_file_header_signature,
+            ),
         };
-        try index(file_content, &temp.files);
-        return temp;
     }
 
-    fn extract(self: *Self, subpath: string, allocator: Allocator) !void {
-        // TODO: remove allocations
-        for (self.files.items) |*lf| {
-            const path = try fs.path.join(allocator, &.{ subpath, try lf.file_path() });
-            defer allocator.free(path);
+    fn extract_all(self: *Self, dir: fs.Dir) !void {
+        defer self.files.reset();
 
-            _ = mem.replace(u8, path, "/", fs.path.sep_str, path);
+        while (self.files.next()) |data| {
+            var lf = try local_file.init(data);
+            const lffp = lf.file_path();
+            var lffp_it = mem.splitAny(
+                u8,
+                lffp,
+                delims,
+            );
 
-            var path_it = mem.split(u8, path, fs.path.sep_str);
-            var dir = fs.cwd();
-            while (path_it.next()) |sub| {
-                dir.makeDir(sub) catch |err| switch (err) {
+            var temp_dir = dir;
+            while (lffp_it.next()) |sub| {
+                temp_dir.makeDir(sub) catch |err| switch (err) {
                     error.PathAlreadyExists => {},
                     else => return err,
                 };
-                dir = try dir.openDir(sub, .{});
+                temp_dir = try temp_dir.openDir(sub, .{});
             }
 
-            const lffn = try lf.file_name();
-            if (lffn.len == 0) continue;
+            const lffn = lf.file_name();
 
-            const file = try dir.createFile(lffn, .{});
+            const file = try temp_dir.createFile(lffn, .{});
             defer file.close();
 
             const writer = file.writer();
@@ -52,24 +65,23 @@ const archive = struct {
         }
     }
 
-    fn index(file_content: string, files: *std.ArrayList(local_file)) !void {
-        const idx = mem.indexOf(u8, file_content, &needle);
-        if (idx) |i| {
-            const lf = try local_file.init(file_content[i..]);
-            try files.append(lf);
-            try index(file_content[i + 1 ..], files);
+    fn extract_file_to_writer(self: *Self, filename: string, writer: anytype) !void {
+        defer self.files.reset();
+        while (self.files.next()) |data| {
+            var lf = try local_file.init(data);
+            if (contains(u8, lf.header.filename, filename)) {
+                try lf.deflate(writer);
+                break;
+            }
         }
     }
-    fn extract_file_to_writer(self: *Self, filename: string, writer: anytype) !void {
-        for (self.files.items) |*lf| if (mem.indexOf(u8, lf.header.filename,filename) != null) {
-            try lf.deflate(writer);
-            break;
-        };
-    }
 
-
-    fn deinit(self: *Self) void {
-        self.files.deinit();
+    fn list_files(self: *Self, writer: anytype) !void {
+        defer self.files.reset();
+        while (self.files.next()) |data| {
+            const lf = try local_file.init(data);
+            writer.print("{s}\n", .{lf.header.filename});
+        }
     }
 };
 
@@ -81,9 +93,7 @@ const local_file = struct {
 
     fn init(file_content: string) !local_file {
         var header = try local_file_header.init(file_content);
-
         if (file_content.len < header.compressed_size + header.size()) return error.compressed_size_header_mismatch;
-
         const content = file_content[header.size() .. header.size() + header.compressed_size];
 
         return .{
@@ -103,43 +113,46 @@ const local_file = struct {
         switch (self.header.compression_method) {
             0x8 => try compress.flate.decompress(reader, writer),
             0x0 => try writer.writeAll(self.content),
-            else => {
-                std.debug.print("{any}\n{s}", .{self.header,self.header.filename});
-                return error.not_implemented;
-            },
+            else => return error.not_implemented,
         }
     }
 
-    fn file_type(self: *Self) !string {
-        const idx = mem.lastIndexOf(u8, self.header.filename, ".");
-        if (idx) |i| {
-            return self.header.filename[i..];
-        }
+    fn file_type(self: *Self) string {
+        const idx_dot = mem.lastIndexOf(u8, self.header.filename, ".");
+        const idx_delim = mem.lastIndexOfAny(u8, self.header.filename, delims);
+        
+        if (idx_dot) |dot_index|
+        if (idx_delim) |delim_index| {
+            if(delim_index > dot_index) return "";
+            if(delim_index + 1 == dot_index) return "";
 
-        return error.unable_to_determine_file_type;
+            return self.header.filename[dot_index..];
+        };
+
+        return "";
     }
 
-    fn file_name(self: *Self) !string {
-        const idx = mem.lastIndexOf(u8, self.header.filename, "/");
+    fn file_name(self: *Self) string {
+        const idx = mem.lastIndexOfAny(u8, self.header.filename, delims);
         if (idx) |i| {
             return self.header.filename[i + 1 ..];
         }
 
-        return error.unable_to_determine_file_name;
+        return self.header.filename;
     }
 
-    fn file_path(self: *Self) !string {
-        const idx = mem.lastIndexOf(u8, self.header.filename, "/");
+    fn file_path(self: *Self) string {
+        const idx = mem.lastIndexOfAny(u8, self.header.filename, delims);
         if (idx) |i| {
             return self.header.filename[0..i];
         }
 
-        return error.unable_to_determine_file_path;
+        return ".";
     }
 };
 
 const local_file_header = struct {
-    const known_size: usize = 30;
+    const known_size: usize = 26;
     const Self = @This();
 
     signature: u32 = 0x04034b50,
@@ -157,33 +170,7 @@ const local_file_header = struct {
     extra_field: string = undefined,
 
     fn init(file_content: string) !local_file_header {
-        // TODO: replace init with init_no_signature
-        if (file_content.len < 30) return error.file_content_too_short;
-        var temp = local_file_header{
-            .signature = mem.readInt(u32, file_content[0..4], .little),
-            .version = mem.readInt(u16, file_content[4..6], .little),
-            .genera_purpose_bit_flag = mem.readInt(u16, file_content[6..8], .little),
-            .compression_method = mem.readInt(u16, file_content[8..10], .little),
-            .last_modification_time = mem.readInt(u16, file_content[10..12], .little),
-            .last_modification_date = mem.readInt(u16, file_content[12..14], .little),
-            .crc_32 = mem.readInt(u32, file_content[14..18], .little),
-            .compressed_size = mem.readInt(u32, file_content[18..22], .little),
-            .uncompressed_size = mem.readInt(u32, file_content[22..26], .little),
-            .file_name_length = mem.readInt(u16, file_content[26..28], .little),
-            .extra_field_length = mem.readInt(u16, file_content[28..30], .little),
-        };
-        if (temp.signature != 0x04034b50) return error.not_a_zip_file_header;
-
-        const filename_end = 30 + temp.file_name_length;
-        const extra_end = filename_end + temp.extra_field_length;
-        temp.filename = file_content[30..filename_end];
-        temp.extra_field = file_content[filename_end..extra_end];
-
-        return temp;
-    }
-
-    fn init_no_signature(file_content: string) !local_file_header {
-        if (file_content.len < 30) return error.file_content_too_short;
+        if (file_content.len < 28) return error.file_content_too_short;
         var temp = local_file_header{
             .version = mem.readInt(u16, file_content[0..2], .little),
             .genera_purpose_bit_flag = mem.readInt(u16, file_content[2..4], .little),
@@ -197,9 +184,9 @@ const local_file_header = struct {
             .extra_field_length = mem.readInt(u16, file_content[24..26], .little),
         };
 
-        const filename_end = 28 + temp.file_name_length;
+        const filename_end = 26 + temp.file_name_length;
         const extra_end = filename_end + temp.extra_field_length;
-        temp.filename = file_content[28..filename_end];
+        temp.filename = file_content[26..filename_end];
         temp.extra_field = file_content[filename_end..extra_end];
 
         return temp;
@@ -217,9 +204,14 @@ test "archive extract" {
     const buffer: []const u8 = try file.readToEndAlloc(testing.allocator, stat.size);
     defer testing.allocator.free(buffer);
 
-    var arc = try archive.init(buffer, testing.allocator);
-    defer arc.deinit();
-    try arc.extract("result", testing.allocator);
+    fs.cwd().makeDir("result") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    const dir = try fs.cwd().openDir("result", .{});
+
+    var arc = archive.init(buffer);
+    try arc.extract_all(dir);
 }
 
 test "archive single file" {
@@ -236,14 +228,13 @@ test "archive single file" {
         else => return err,
     };
 
-    const path = try fs.path.join(testing.allocator, &.{ subpath, "archive_single_file.txt" });
+    const path = try fs.path.join(testing.allocator, &.{ subpath, "archive_single_file.png" });
     defer testing.allocator.free(path);
 
     var result_file = try fs.cwd().createFile(path, .{});
     defer result_file.close();
 
-    var arc = try archive.init(buffer, testing.allocator);
-    defer arc.deinit();
+    var arc = archive.init(buffer);
 
-    try arc.extract_file_to_writer("logfile.txt", result_file.writer());
+    try arc.extract_file_to_writer("gs01_01.png", result_file.writer());
 }
