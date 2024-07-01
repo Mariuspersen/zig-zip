@@ -21,6 +21,7 @@ const Flags = struct {
     single: bool = false,
     select: bool = false,
     list: bool = false,
+    stdout: bool = false,
 
     fn init(arg: String) Flags {
         var temp: Flags = .{};
@@ -28,7 +29,8 @@ const Flags = struct {
             'e' => temp.extract = true,
             'l' => temp.list = true,
             'f' => temp.single = true,
-            's','i' => temp.select = true,
+            's', 'i' => temp.select = true,
+            'o' => temp.stdout = true,
             else => {},
         };
         return temp;
@@ -88,7 +90,7 @@ pub fn main() !void {
     }
 
     for (files.items) |*file| {
-        if (file.flags.single) {
+        if (file.flags.single or file.flags.stdout) {
             const to_extract = fs.path.basename(file.path);
             for (files.items) |*subfile| {
                 const sub_file_base = fs.path.basename(subfile.path);
@@ -101,11 +103,15 @@ pub fn main() !void {
                     const sub_content = try open_subfile.readToEndAlloc(allocator, sub_stat.size);
                     defer allocator.free(sub_content);
 
-                    const dest_file = try fs.cwd().createFile(to_extract, .{});
-                    defer dest_file.close();
-
                     var subzip = Archive.init(sub_content);
-                    try subzip.extractFileToWriter(to_extract, dest_file.writer());
+                    if (file.flags.stdout) {
+                        try subzip.extractFileToWriter(to_extract, stdbw);
+                    } else {
+                        const dest_file = try fs.cwd().createFile(to_extract, .{});
+                        defer dest_file.close();
+                        try subzip.extractFileToWriter(to_extract, dest_file.writer());
+                    }
+
                     break;
                 }
             }

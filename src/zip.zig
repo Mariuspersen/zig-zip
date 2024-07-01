@@ -57,7 +57,10 @@ pub const Archive = struct {
 
             const lffn = lf.fileName();
 
-            const file = try temp_dir.createFile(lffn, .{});
+            const file = temp_dir.createFile(lffn, .{}) catch |err| switch (err) {
+                fs.File.OpenError.IsDir => continue,
+                else => return err,
+            };
             defer file.close();
 
             const writer = file.writer();
