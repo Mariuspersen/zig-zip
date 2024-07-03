@@ -5,6 +5,7 @@ Usage:  unzip <flag> <file> [...]
         -f <file name>      extracts given file name
         -s <archive>        selects file for the -f flag
         -i <archive>        same as -s
+        -o <file name>      Send to stdout rather than create a file
         (omitted) <archive> works same way as -s when flag is omitted
     examples:
         unzip a.zip -f b.txt            extracts file.txt from archive.zip

@@ -22,10 +22,12 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(unzip);
 
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/zip.zig"),
+        .root_source_file = b.path("tests/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    lib_unit_tests.root_module.addImport("zip", lib);
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
