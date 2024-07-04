@@ -17,9 +17,7 @@ fn contains(comptime T: type, haystack: []const T, needle: []const T) bool {
     } else return false;
 }
 
-inline fn IntToByteSlice(
-    number: anytype,
-) [@divExact(@typeInfo(@TypeOf(number)).Int.bits, 8)]u8 {
+inline fn IntToByteSlice(number: anytype) [@divExact(@typeInfo(@TypeOf(number)).Int.bits, 8)]u8 {
     return @bitCast(number);
 }
 
@@ -251,11 +249,11 @@ const LocalFileHeader = struct {
 
     fn create(compressed_size: u32, uncompressed_size: u32, crc32_hash: u32,filename: String) LocalFileHeader {
         const temp = LocalFileHeader{
-            .version = 20,
-            .genera_purpose_bit_flag = 2,
+            .version = 0,
+            .genera_purpose_bit_flag = 0,
             .compression_method = 0x8,
-            .last_modification_date = 3,
-            .last_modification_time = 4,
+            .last_modification_date = 0,
+            .last_modification_time = 0,
             .crc_32 = crc32_hash,
             .compressed_size = compressed_size,
             .uncompressed_size = uncompressed_size,
